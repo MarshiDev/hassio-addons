@@ -94,6 +94,7 @@ if [[ ${VIF_ENABLE} == true ]]; then
 fi
 
 # Make wlan0 interface still show up in HA UI
+nmcli connection delete "dummy-wifi"
 nmcli connection add type wifi ifname wlan0 con-name dummy-wifi ssid "placeholder"
 nmcli connection modify dummy-wifi connection.autoconnect no
 
