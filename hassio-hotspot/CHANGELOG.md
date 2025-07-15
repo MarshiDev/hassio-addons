@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.9]
+### Changed
+- Force VIF
+- Automatically Create a bridge to support certain integrations
+
+## [1.1.8]
+### Added
+- VIF support
+
 ## [1.1.7]
 ### Added
 - Configurable DHCP lease time

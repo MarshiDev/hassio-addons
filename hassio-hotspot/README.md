@@ -1,4 +1,4 @@
-# hassio-hotspot-vif
+# hassio-hotspot
 Enables an access point using USB WiFi dongle (or onboard) for your IoT devies on Home Assistant (with embedded DHCP server). USB WiFi is mostly useful if you want to have a different network infrastructure for your IoT devices, and the RPI onboard WiFi is not available or is unstable. In this fork, virtual interfaces are supported to allow connecting to wifi and being an access point at the same time.
 
 It allows creating an access point **with optional a DHCP server**, to your IoT devices using external USB WiFi dongles, **Ralink, Atheros and others**. It began a fork of the hostapd addon, that I renamed, given that it now does more than that: it adds DHCP server with selectable internet access to the devices on the hotspot. It also adds supports to external USB dongles in order to enable a stable access points, known that the onboard Broadcomm WiFi on the RPI has unstable operation and does not provide the reliability required.
@@ -8,7 +8,7 @@ It allows creating an access point **with optional a DHCP server**, to your IoT 
 To use this repository with your own Hass.io installation please follow [the official instructions](https://www.home-assistant.io/hassio installing_third_party_addons/) on the Home Assistant website with the following URL:
 
 ```txt
-https://github.com/joaofl/hassio-addons
+https://github.com/marshidev/hassio-addons
 ```
 
 ### Configuration
@@ -24,11 +24,8 @@ according to your needs:
     "address": "192.168.2.1",
     "netmask": "255.255.255.0",
     "broadcast": "192.168.2.254"
-    "vif_enable": false,
     "interface": ""
     "interface_internet": "eth0"
-    "allow_internet": false
-    "dhcp_server": true
     "dhcp_start": "192.168.2.100",
     "dhcp_end": "192.168.2.200",
     "dhcp_dns": "1.1.1.1",
@@ -51,12 +48,6 @@ When channel set to 0, it will automatically find the best channel.
 When the `interface` option is left blank, a list with the detected wlan
 interfaces will be printed on the logs and the addon will terminate. Set
 the correct `interface` value on the configuration then restart the addon.
-
-### Virtual Interface Configuration
-The `vif_enable` option determines wether a virtual interface will be used for the access point. A virtual interface allows homeassistant
-to be an access point through one interface (commonly wlan0), while still being able to connect homeassistant to a Network through that interface.
-It also allows `interface` and `interface_internet` to be the same (This is useful if you want to connect to a wifi network and open a wifi network at the same time).
-Using a VIF can increase CPU usage and power consumption.
 
 ### DHCP Configuration
 
