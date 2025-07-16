@@ -3,13 +3,14 @@
 # -- Signal handler
 cleanup(){
     echo "Cleaning up..."
+    kill $UDHCPD_PID $HOSTAPD_PID 2>/dev/null
     ip link set br0 down 2>/dev/null
     brctl delbr br0 2>/dev/null
     ip link set ${INTERFACE_AP} down 2>/dev/null
     iw dev ${INTERFACE_AP} del 2>/dev/null
     iptables -t nat -D POSTROUTING -o ${INTERNET_IF} -j MASQUERADE 2>/dev/null
-    iptables -D FORWARD -i ${INTERNET_IF} -o ${INTERFACE_AP} -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
-    iptables -D FORWARD -i ${INTERFACE_AP} -o ${INTERNET_IF} -j ACCEPT 2>/dev/null
+    iptables -D FORWARD -i ${INTERNET_IF} -o br0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
+    iptables -D FORWARD -i br0 -o ${INTERNET_IF} -j ACCEPT 2>/dev/null
     echo "Done cleanup"
     exit 0
 }
@@ -65,7 +66,7 @@ brctl addif br0 ${INTERNET_IF}
 ip link set br0 up
 
 # Setup IP on bridge (optional, mostly for DHCP server's use)
-ip addr add ${ADDRESS}/${NETMASK} brd ${BROADCAST} dev br0
+ip addr add ${ADDRESS}/24 dev br0
 
 # Hostapd config
 HCONFIG="/hostapd.conf"
@@ -87,13 +88,12 @@ EOF
 
 [[ "$HIDE_SSID" == "true" ]] && echo "ignore_broadcast_ssid=1" >> ${HCONFIG}
 
-# Enable IP forwarding
-sysctl -w net.ipv4.ip_forward=1
+sysctl -w net.ipv4.ip_forward=1 2>/dev/null || echo "Warning: Could not enable IP forwarding"
 
 # Configure NAT
 iptables -t nat -A POSTROUTING -o ${INTERNET_IF} -j MASQUERADE
-iptables -A FORWARD -i ${INTERNET_IF} -o ${INTERFACE_AP} -m state --state RELATED,ESTABLISHED -j ACCEPT
-iptables -A FORWARD -i ${INTERFACE_AP} -o ${INTERNET_IF} -j ACCEPT
+iptables -A FORWARD -i ${INTERNET_IF} -o br0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+iptables -A FORWARD -i br0 -o ${INTERNET_IF} -j ACCEPT
 
 # DHCP setup
 UCONFIG="/etc/udhcpd.conf"
@@ -105,7 +105,7 @@ END_OCTET=$(echo ${DHCP_END} | cut -d. -f4)
 MAX_LEASES=$((END_OCTET - START_OCTET + 1))
 
 cat <<EOF > ${UCONFIG}
-interface    ${INTERFACE_AP}
+interface    br0
 start        ${DHCP_START}
 end          ${DHCP_END}
 max_leases   ${MAX_LEASES}
@@ -122,10 +122,10 @@ done <<< "${STATIC_LEASES}"
 
 # Start DHCP and AP
 echo "Starting DHCP..."
-udhcpd -f &
+udhcpd -f & UDHCPD_PID=$!
 
 echo "Starting hostapd..."
-hostapd ${HCONFIG} &
+hostapd ${HCONFIG} & HOSTAPD_PID=$!
 
 # Monitor loop
 while true; do
