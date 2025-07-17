@@ -170,7 +170,7 @@ echo -e "\n==== Starting HostAP daemon ====\n"
 hostapd ${HCONFIG} & HOSTAPD_PID=$!
 
 sleep 2
-if ! ps -p $HOSTAPD_PID > /dev/null; then
+if ! kill -0 $HOSTAPD_PID 2>/dev/null; then
     echo "hostapd failed to start. Exiting..."
     term_handler
 fi
