@@ -1,78 +1,139 @@
 #!/bin/bash
 
-# -- Signal handler
-cleanup(){
-    echo "Cleaning up..."
-    kill $UDHCPD_PID $HOSTAPD_PID 2>/dev/null
-    ip link set br0 down 2>/dev/null
-    brctl delbr br0 2>/dev/null
-    ip link set ${INTERFACE_AP} down 2>/dev/null
-    iw dev ${INTERFACE_AP} del 2>/dev/null
-    iptables -t nat -D POSTROUTING -o ${INTERNET_IF} -j MASQUERADE 2>/dev/null
-    iptables -D FORWARD -i ${INTERNET_IF} -o br0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
-    iptables -D FORWARD -i br0 -o ${INTERNET_IF} -j ACCEPT 2>/dev/null
-    echo "Done cleanup"
+# SIGTERM-handler this funciton will be executed when the container receives the SIGTERM signal (when stopping)
+reset_interfaces(){
+    ifdown $INTERFACE_AP
+    sleep 1
+    if [[ "$VIF_ENABLE" == true ]]; then
+        iw dev ${INTERFACE_AP} del
+    else
+        ip link set ${INTERFACE_AP} down
+        ip addr flush dev ${INTERFACE_AP}
+    fi
+}
+
+term_handler(){
+    echo "Resseting interfaces and killing Servers"
+    kill $DHCPD_PID $HOSTAPD_PID 2>/dev/null
+    reset_interfaces
+    echo "Stopping..."
     exit 0
 }
-trap cleanup SIGTERM
+
+# Setup signal handlers
+trap 'term_handler' SIGTERM
 
 echo "Starting..."
 
 CONFIG_PATH=/data/options.json
 
-SSID=$(jq -r ".ssid" $CONFIG_PATH)
-WPA_PASSPHRASE=$(jq -r ".wpa_passphrase" $CONFIG_PATH)
-CHANNEL=$(jq -r ".channel" $CONFIG_PATH)
-ADDRESS=$(jq -r ".address" $CONFIG_PATH)
-NETMASK=$(jq -r ".netmask" $CONFIG_PATH)
-BROADCAST=$(jq -r ".broadcast" $CONFIG_PATH)
-INTERFACE=$(jq -r ".interface" $CONFIG_PATH)
-INTERNET_IF=$(jq -r ".internet_interface" $CONFIG_PATH)
-HIDE_SSID=$(jq -r ".hide_ssid" $CONFIG_PATH)
+SSID=$(jq --raw-output ".ssid" $CONFIG_PATH)
+WPA_PASSPHRASE=$(jq --raw-output ".wpa_passphrase" $CONFIG_PATH)
+CHANNEL=$(jq --raw-output ".channel" $CONFIG_PATH)
+ADDRESS=$(jq --raw-output ".address" $CONFIG_PATH)
+NETMASK=$(jq --raw-output ".netmask" $CONFIG_PATH)
+BROADCAST=$(jq --raw-output ".broadcast" $CONFIG_PATH)
+VIF_ENABLE=$(jq --raw-output ".vif_enable" $CONFIG_PATH)
+INTERFACE=$(jq --raw-output ".interface" $CONFIG_PATH)
+INTERNET_IF=$(jq --raw-output ".internet_interface" $CONFIG_PATH)
+ALLOW_INTERNET=$(jq --raw-output ".allow_internet" $CONFIG_PATH)
+HIDE_SSID=$(jq --raw-output ".hide_ssid" $CONFIG_PATH)
 
-DHCP_START=$(jq -r ".dhcp_start" $CONFIG_PATH)
-DHCP_END=$(jq -r ".dhcp_end" $CONFIG_PATH)
-DHCP_DNS=$(jq -r ".dhcp_dns" $CONFIG_PATH)
-DHCP_SUBNET=$(jq -r ".dhcp_subnet" $CONFIG_PATH)
-DHCP_ROUTER=$(jq -r ".dhcp_router" $CONFIG_PATH)
-LEASE_TIME=$(jq -r ".lease_time" $CONFIG_PATH)
+DHCP_SERVER=$(jq --raw-output ".dhcp_enable" $CONFIG_PATH)
+DHCP_START=$(jq --raw-output ".dhcp_start" $CONFIG_PATH)
+DHCP_END=$(jq --raw-output ".dhcp_end" $CONFIG_PATH)
+DHCP_DNS=$(jq --raw-output ".dhcp_dns" $CONFIG_PATH)
+DHCP_SUBNET=$(jq --raw-output ".dhcp_subnet" $CONFIG_PATH)
+DHCP_ROUTER=$(jq --raw-output ".dhcp_router" $CONFIG_PATH)
+
+LEASE_TIME=$(jq --raw-output ".lease_time" $CONFIG_PATH)
 STATIC_LEASES=$(jq -r '.static_leases[] | "\(.mac),\(.ip),\(.name)"' $CONFIG_PATH)
 
-# Sanity check
-for VAR in SSID WPA_PASSPHRASE CHANNEL ADDRESS NETMASK BROADCAST INTERFACE INTERNET_IF DHCP_START DHCP_END DHCP_DNS DHCP_SUBNET DHCP_ROUTER; do
-  if [[ -z "${!VAR}" ]]; then
-    echo >&2 "Error: $VAR not set in options.json"
-    exit 1
-  fi
+# Enforces required env variables
+required_vars=(SSID WPA_PASSPHRASE CHANNEL ADDRESS NETMASK BROADCAST)
+for required_var in "${required_vars[@]}"; do
+    if [[ -z ${!required_var} ]]; then
+        echo >&2 "Error: $required_var env variable not set."
+        exit 1
+    fi
 done
 
-# VIF setup (always enabled)
-INTERFACE_AP="${INTERFACE}_ap"
-if ! iw dev | grep -q "${INTERFACE_AP}"; then
-    echo "Creating AP VIF: ${INTERFACE_AP}"
-    iw dev ${INTERFACE} interface add ${INTERFACE_AP} type __ap
+INTERFACES_AVAILABLE="$(ifconfig -a | grep '^wl' | cut -d ':' -f '1')"
+UNKNOWN=true
+
+if [[ -z ${INTERFACE} ]]; then
+    echo >&2 "Network interface not set. Please set one of the available:"
+    echo >&2 "${INTERFACES_AVAILABLE}"
+    exit 1
 fi
 
-# Bring up interfaces
-ip link set ${INTERFACE} up
-ip link set ${INTERFACE_AP} up
-ip link set ${INTERNET_IF} up
+for OPTION in ${INTERFACES_AVAILABLE}; do
+    if [[ ${INTERFACE} == ${OPTION} ]]; then
+        UNKNOWN=false
+    fi
+done
 
-# Always use bridge mode
-echo "Creating bridge br0"
-brctl addbr br0
-brctl addif br0 ${INTERFACE_AP}
-brctl addif br0 ${INTERNET_IF}
-ip link set br0 up
+if [[ ${UNKNOWN} == true ]]; then
+    echo >&2 "Unknown network interface ${INTERFACE}. Please set one of the available:"
+    echo >&2 "${INTERFACES_AVAILABLE}"
+    exit 1
+fi
 
-# Setup IP on bridge (optional, mostly for DHCP server's use)
-ip addr add ${ADDRESS}/24 dev br0
+INTERFACE_AP=${INTERFACE}
 
-# Hostapd config
+if [[ ${VIF_ENABLE} == true ]]; then
+    INTERFACE_AP="${INTERFACE}_ap"
+
+    # Check VIF support
+    if ! (iw list | awk '/valid interface combinations:/,/^$/' | grep '#{ managed } <= 1' && iw list | awk '/valid interface combinations:/,/^$/' | grep '#{ AP } <= 1'); then
+        echo >&2 "Wi-Fi adapter does not support simultaneous Access point and client mode (VIF)."
+        echo >&2 "Please use a Wi-Fi adapter that supports concurrent interfaces (AP + STA) or disable VIF."
+        exit 1
+    fi
+
+    # Ensure VIF exists
+    if ! iw dev | grep -q ${INTERFACE_AP}; then
+        echo "Creating virtual interface ${INTERFACE_AP}"
+        iw dev ${INTERFACE} interface add ${INTERFACE_AP} type __ap
+    fi
+fi
+
+# Make wlan0 interface still show up in HA UI
+nmcli connection delete "dummy-wifi"
+nmcli connection add type wifi ifname wlan0 con-name dummy-wifi ssid "placeholder"
+nmcli connection modify dummy-wifi connection.autoconnect no
+
+echo "Set nmcli managed no"
+nmcli dev set ${INTERFACE_AP} managed no
+
+echo "Network interface set to ${INTERFACE_AP}"
+
+# Configure iptables to enable/disable internet
+RULE_3="POSTROUTING -o ${INTERNET_IF} -j MASQUERADE"
+RULE_4="FORWARD -i ${INTERNET_IF} -o ${INTERFACE_AP} -m state --state RELATED,ESTABLISHED -j ACCEPT"
+RULE_5="FORWARD -i ${INTERFACE_AP} -o ${INTERNET_IF} -j ACCEPT"
+
+echo "Deleting iptables"
+iptables -v -t nat -D $(echo ${RULE_3})
+iptables -v -D $(echo ${RULE_4})
+iptables -v -D $(echo ${RULE_5})
+
+iptables -A INPUT -p udp --dport 5353 -j ACCEPT
+iptables -A INPUT -p udp --dport 1900 -j ACCEPT
+
+if test ${ALLOW_INTERNET} = true; then
+    echo "Configuring iptables for NAT"
+    iptables -v -t nat -A $(echo ${RULE_3})
+    iptables -v -A $(echo ${RULE_4})
+    iptables -v -A $(echo ${RULE_5})
+fi
+
+
+# Setup hostapd.conf
 HCONFIG="/hostapd.conf"
+
 cat <<EOF > ${HCONFIG}
 interface=${INTERFACE_AP}
-bridge=br0
 ssid=${SSID}
 wpa_passphrase=${WPA_PASSPHRASE}
 channel=${CHANNEL}
@@ -86,50 +147,64 @@ wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 EOF
 
-[[ "$HIDE_SSID" == "true" ]] && echo "ignore_broadcast_ssid=1" >> ${HCONFIG}
+if test ${HIDE_SSID} = true; then
+    echo "Hidding SSID"
+    echo "ignore_broadcast_ssid=1" >> ${HCONFIG}
+fi
 
-sysctl -w net.ipv4.ip_forward=1 2>/dev/null || echo "Warning: Could not enable IP forwarding"
+# Setup interface
+ip addr add ${ADDRESS}/${NETMASK} broadcast ${BROADCAST} dev ${INTERFACE_AP}
+ip link set ${INTERFACE_AP} up
 
-# Configure NAT
-iptables -t nat -A POSTROUTING -o ${INTERNET_IF} -j MASQUERADE
-iptables -A FORWARD -i ${INTERNET_IF} -o br0 -m state --state RELATED,ESTABLISHED -j ACCEPT
-iptables -A FORWARD -i br0 -o ${INTERNET_IF} -j ACCEPT
+echo "Resseting interfaces"
+reset_interfaces
+ifup ${INTERFACE_AP}
+sleep 1
 
-# DHCP setup
-UCONFIG="/etc/udhcpd.conf"
-mkdir -p /var/lib/udhcpd
-touch /var/lib/udhcpd/udhcpd.leases
+if test ${DHCP_SERVER} = true; then
+    # Create leases directory and file
+    mkdir -p /var/lib/udhcpd
+    touch /var/lib/udhcpd/udhcpd.leases
 
-START_OCTET=$(echo ${DHCP_START} | cut -d. -f4)
-END_OCTET=$(echo ${DHCP_END} | cut -d. -f4)
-MAX_LEASES=$((END_OCTET - START_OCTET + 1))
+    # Calculate max leases from DHCP range
+    START_IP_LAST_OCTET=$(echo ${DHCP_START} | cut -d. -f4)
+    END_IP_LAST_OCTET=$(echo ${DHCP_END} | cut -d. -f4)
+    MAX_LEASES=$((END_IP_LAST_OCTET - START_IP_LAST_OCTET + 1))
 
-cat <<EOF > ${UCONFIG}
-interface    br0
-start        ${DHCP_START}
-end          ${DHCP_END}
-max_leases   ${MAX_LEASES}
-opt dns      ${DHCP_DNS}
-opt subnet   ${DHCP_SUBNET}
-opt router   ${DHCP_ROUTER}
-opt lease    ${LEASE_TIME}
-EOF
+    # Setup hdhcpd.conf
+    UCONFIG="/etc/udhcpd.conf"
 
-# Static leases
-while IFS=, read -r mac ip name; do
-    [[ -n "$mac" && -n "$ip" ]] && echo "static_lease ${mac} ${ip} # ${name}" >> ${UCONFIG}
-done <<< "${STATIC_LEASES}"
+    echo "Setup udhcpd ..."
+    echo "interface    ${INTERFACE_AP}"  >> ${UCONFIG}
+    echo "start        ${DHCP_START}"    >> ${UCONFIG}
+    echo "end          ${DHCP_END}"      >> ${UCONFIG}
+    echo "max_leases   ${MAX_LEASES}"    >> ${UCONFIG}
+    echo "opt dns      ${DHCP_DNS}"      >> ${UCONFIG}
+    echo "opt subnet   ${DHCP_SUBNET}"   >> ${UCONFIG}
+    echo "opt router   ${DHCP_ROUTER}"   >> ${UCONFIG}
+    echo "opt lease    ${LEASE_TIME}"    >> ${UCONFIG}
+    echo ""                              >> ${UCONFIG}
 
-# Start DHCP and AP
-echo "Starting DHCP..."
-udhcpd -f & UDHCPD_PID=$!
+    # Add static leases
+    while IFS=, read -r mac ip name; do
+        if [ ! -z "$mac" ] && [ ! -z "$ip" ]; then
+            echo "static_lease ${mac} ${ip}  # ${name}" >> ${UCONFIG}
+        fi
+    done <<< "${STATIC_LEASES}"
 
-echo "Starting hostapd..."
+    echo "Starting DHCP server..."
+    udhcpd -f & DHCPD_PID=$!
+fi
+
+sleep 1
+
+echo "Starting HostAP daemon ..."
 hostapd ${HCONFIG} & HOSTAPD_PID=$!
 
-# Monitor loop
-while true; do
-    echo "Interface ${INTERFACE_AP} status:"
-    ifconfig ${INTERFACE_AP}
+while true; do 
+    echo "Interface stats:"
+    ifconfig | grep ${INTERFACE_AP} -A6
+    echo "DHCP Leases:"
+    cat /var/lib/udhcpd/udhcpd.leases
     sleep 3600
 done
