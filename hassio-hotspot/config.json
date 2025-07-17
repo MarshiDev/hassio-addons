@@ -1,7 +1,7 @@
 {
-  "name": "Hassio Hotspot VIF",
+  "name": "Hassio Hotspot",
   "version": "1.1.8",
-  "slug": "hassio-hotspot-vif",
+  "slug": "hassio-hotspot",
   "description": "Access point for your IoT devives with configurable network interface and DHCP server with VIF support",
   "arch": ["armhf", "armv7", "aarch64", "amd64", "i386"],
   "url": "https://github.com/marshidev/hassio-addons/tree/master/hassio-hotspot",

@@ -4,12 +4,17 @@
 reset_interfaces(){
     ifdown $INTERFACE_AP
     sleep 1
-    ip link set $INTERFACE_AP down
-    ip addr flush dev $INTERFACE_AP
+    if [[ "$VIF_ENABLE" == true ]]; then
+        iw dev ${INTERFACE_AP} del
+    else
+        ip link set ${INTERFACE_AP} down
+        ip addr flush dev ${INTERFACE_AP}
+    fi
 }
 
 term_handler(){
-    echo "Resseting interfaces"
+    echo "Resseting interfaces and killing Servers"
+    kill $DHCPD_PID $HOSTAPD_PID 2>/dev/null
     reset_interfaces
     echo "Stopping..."
     exit 0
@@ -113,6 +118,9 @@ iptables -v -t nat -D $(echo ${RULE_3})
 iptables -v -D $(echo ${RULE_4})
 iptables -v -D $(echo ${RULE_5})
 
+iptables -A INPUT -p udp --dport 5353 -j ACCEPT
+iptables -A INPUT -p udp --dport 1900 -j ACCEPT
+
 if test ${ALLOW_INTERNET} = true; then
     echo "Configuring iptables for NAT"
     iptables -v -t nat -A $(echo ${RULE_3})
@@ -124,12 +132,20 @@ fi
 # Setup hostapd.conf
 HCONFIG="/hostapd.conf"
 
-echo "Setup hostapd ..."
-echo "ssid=${SSID}" >> ${HCONFIG}
-echo "wpa_passphrase=${WPA_PASSPHRASE}" >> ${HCONFIG}
-echo "channel=${CHANNEL}" >> ${HCONFIG}
-echo "interface=${INTERFACE_AP}" >> ${HCONFIG}
-echo "" >> ${HCONFIG}
+cat <<EOF > ${HCONFIG}
+interface=${INTERFACE_AP}
+ssid=${SSID}
+wpa_passphrase=${WPA_PASSPHRASE}
+channel=${CHANNEL}
+driver=nl80211
+hw_mode=g
+ieee80211n=1
+wmm_enabled=1
+auth_algs=1
+wpa=2
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+EOF
 
 if test ${HIDE_SSID} = true; then
     echo "Hidding SSID"
@@ -137,15 +153,8 @@ if test ${HIDE_SSID} = true; then
 fi
 
 # Setup interface
-IFFILE="/etc/network/interfaces"
-
-echo "Setup interface ..."
-echo "" > ${IFFILE}
-echo "iface ${INTERFACE_AP} inet static" >> ${IFFILE}
-echo "  address ${ADDRESS}" >> ${IFFILE}
-echo "  netmask ${NETMASK}" >> ${IFFILE}
-echo "  broadcast ${BROADCAST}" >> ${IFFILE}
-echo "" >> ${IFFILE}
+ip addr add ${ADDRESS}/${NETMASK} broadcast ${BROADCAST} dev ${INTERFACE_AP}
+ip link set ${INTERFACE_AP} up
 
 echo "Resseting interfaces"
 reset_interfaces
@@ -184,16 +193,18 @@ if test ${DHCP_SERVER} = true; then
     done <<< "${STATIC_LEASES}"
 
     echo "Starting DHCP server..."
-    udhcpd -f &
+    udhcpd -f & DHCPD_PID=$!
 fi
 
 sleep 1
 
 echo "Starting HostAP daemon ..."
-hostapd ${HCONFIG} &
+hostapd ${HCONFIG} & HOSTAPD_PID=$!
 
 while true; do 
     echo "Interface stats:"
     ifconfig | grep ${INTERFACE_AP} -A6
+    echo "DHCP Leases:"
+    cat /var/lib/udhcpd/udhcpd.leases
     sleep 3600
 done
