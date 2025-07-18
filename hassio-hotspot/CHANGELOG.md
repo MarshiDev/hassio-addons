@@ -1,13 +1,9 @@
 # Changelog
 
-## [1.1.9]
-### Changed
-- Force VIF
-- Automatically Create a bridge to support certain integrations
-
 ## [1.1.8]
 ### Added
-- VIF support
+- Removed a lot of advanced configuration
+- Simplified everything to make it basically plug-and-play
 
 ## [1.1.7]
 ### Added
